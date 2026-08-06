@@ -55,13 +55,36 @@ public class GameStatsData : ScriptableObject
     };
 
     /// <summary>
-    /// Returns the construction duration in seconds for an upgrade from a given current
-    /// level. For now hardcoded to 10s for all (resource, level) pairs — wood/clay/iron/
-    /// wheat all share the same duration at every level. Refactor to a Dictionary once the
-    /// Travian-style growth curve lands.
+    /// Construction duration (seconds) per (resource, current level). The nested list is
+    /// indexed by the level the block is being upgraded FROM, so levelsList[0] is the
+    /// time for a level-0 → level-1 upgrade.
+    /// <para>
+    /// Shape mirrors <see cref="upgradeCost"/>: top-level key is the resource type. The
+    /// nested type is a flat <c>List&lt;int&gt;</c> rather than the InventoryType-keyed
+    /// dictionary used by <see cref="upgradeCost"/> because duration is a single scalar
+    /// (seconds), whereas cost is a basket of six resource types. Default entries are 10s
+    /// across the board — edit this dictionary (or the .asset file once you swap to an
+    /// Inspector-editable backing type) to introduce a Travian-style growth curve.
+    /// </para>
     /// </summary>
+    public Dictionary<ResourceType, List<int>> upgradeDuration = new Dictionary<ResourceType, List<int>>()
+    {
+        // levelsList[i] = duration to build from level i to i+1 (seconds).
+        { ResourceType.wood,  new List<int> { 10, 10, 10, 10 } },
+        { ResourceType.clay,  new List<int> { 10, 10, 10, 10 } },
+        { ResourceType.iron,  new List<int> { 10, 10, 10, 10 } },
+        { ResourceType.wheat, new List<int> { 10, 10, 10, 10 } }
+    };
+
     public int GetUpgradeDuration(ResourceType resource, int currentLevel)
     {
+        // Look up the per-(resource, level) entry. Falls back to 10s if asset is missing
+        // a row, the level index is out of range, or the dictionary shape is incomplete.
+        if (upgradeDuration.TryGetValue(resource, out var levels)
+            && currentLevel >= 0 && currentLevel < levels.Count)
+        {
+            return levels[currentLevel];
+        }
         return 10;
     }
 
