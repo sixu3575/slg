@@ -1,0 +1,57 @@
+# ---- Unity 工程的 .gitignore（标准模板，可按需调整）----
+
+# Unity 自动生成的临时/缓存目录（不要入库）
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+
+# Visual Studio / Rider / VSCode 缓存
+.vs/
+.vscode/
+.idea/
+
+# IDE 自动生成的工程文件（Unity 会自己重新生成，不入库）
+# 想保留这些来共享 IDE 配置可以删掉 / 注释掉下面几行
+/*.csproj
+/*.sln
+*.csproj.user
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Unity3D 打包产物
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# Crashlytics 自动生成
+crashlytics-build.properties
+
+# 重要：必须保留 .meta 文件（GUID 是 Unity 引用的依据）
+# 这一段是关键：先排除所有 .meta，再用 ! 保留
+*.meta
+!?[Aa]ssets/**/*.meta
+!/?[Pp]ackages/**/package.json.meta
+
+# .vsconfig 用来锁定 VS 推荐组件，保留
+!.vsconfig
+
+# 通用的临时文件
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
