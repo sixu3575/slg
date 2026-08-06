@@ -54,6 +54,17 @@ public class GameStatsData : ScriptableObject
         }
     };
 
+    /// <summary>
+    /// Returns the construction duration in seconds for an upgrade from a given current
+    /// level. For now hardcoded to 10s for all (resource, level) pairs — wood/clay/iron/
+    /// wheat all share the same duration at every level. Refactor to a Dictionary once the
+    /// Travian-style growth curve lands.
+    /// </summary>
+    public int GetUpgradeDuration(ResourceType resource, int currentLevel)
+    {
+        return 10;
+    }
+
     public int GetUpgradeCost(ResourceType resource, int levelIndex, InventoryType costType)
     {
         // Check if the resource type exists in the dictionary

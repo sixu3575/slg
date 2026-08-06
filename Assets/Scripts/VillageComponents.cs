@@ -51,6 +51,11 @@ public class Resourceblock
     public ResourceType resourceType;
     public bool isUpgrading;
     public bool isDowngrading;
+    // Server-authoritative construction queue state (NGO ServerTime, unit: seconds).
+    // Lives here in the persistent class, mirrored by NetworkResourceBlock for transport.
+    public bool isUnderConstruction;
+    public double upgradeStartServerTime;
+    public double upgradeEndServerTime;
 
     public Resourceblock(ResourceType resourceType)
     {
@@ -58,6 +63,9 @@ public class Resourceblock
         this.resourceType = resourceType;
         this.isUpgrading = false;
         this.isDowngrading = false;
+        this.isUnderConstruction = false;
+        this.upgradeStartServerTime = 0;
+        this.upgradeEndServerTime = 0;
     }
 }
 
@@ -67,6 +75,10 @@ public struct NetworkResourceBlock : INetworkSerializable
     public ResourceType resourceType;
     public bool isUpgrading;
     public bool isDowngrading;
+    // Server-authoritative construction queue fields (mirror Resourceblock).
+    public bool isUnderConstruction;
+    public double upgradeStartServerTime;
+    public double upgradeEndServerTime;
 
     public NetworkResourceBlock(Resourceblock block)
     {
@@ -74,6 +86,9 @@ public struct NetworkResourceBlock : INetworkSerializable
         this.resourceType = block.resourceType;
         this.isUpgrading = block.isUpgrading;
         this.isDowngrading = block.isDowngrading;
+        this.isUnderConstruction = block.isUnderConstruction;
+        this.upgradeStartServerTime = block.upgradeStartServerTime;
+        this.upgradeEndServerTime = block.upgradeEndServerTime;
     }
 
     public void NetworkSerialize<T>(BufferSerializer<T> serializer) where T : IReaderWriter
@@ -82,6 +97,9 @@ public struct NetworkResourceBlock : INetworkSerializable
         serializer.SerializeValue(ref resourceType);
         serializer.SerializeValue(ref isUpgrading);
         serializer.SerializeValue(ref isDowngrading);
+        serializer.SerializeValue(ref isUnderConstruction);
+        serializer.SerializeValue(ref upgradeStartServerTime);
+        serializer.SerializeValue(ref upgradeEndServerTime);
     }
 }
 
