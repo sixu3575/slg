@@ -56,6 +56,9 @@ public class ClientVillageDatabase : MonoBehaviour
                     block.level = netBlock.level;
                     block.isUpgrading = netBlock.isUpgrading;
                     block.isDowngrading = netBlock.isDowngrading;
+                    block.isUnderConstruction = netBlock.isUnderConstruction;
+                    block.upgradeStartServerTime = netBlock.upgradeStartServerTime;
+                    block.upgradeEndServerTime = netBlock.upgradeEndServerTime;
                     runtimeVillage.farmlands.resources.Add(block);
                 }
             }
@@ -107,6 +110,11 @@ public class ClientVillageDatabase : MonoBehaviour
             clientVillageCache[runtimeVillage.id] = runtimeVillage;
             inspectorVillageDebugList = new List<VillageData>(clientVillageCache.Values);
         }
+
+        // Notify any UI (e.g. construction queue) that the cache just got a fresh authoritative
+        // pull from the server, so isUnderConstruction flags / inventory / levels are all up to date.
+        VillageActionHandler.OnQueueChanged?.Invoke();
+        VillageActionHandler.OnInventoryChanged?.Invoke();
 
         Debug.Log($"[Client Database] Successfully reconstructed {clientVillageCache.Count} full village class models into memory.");
     }

@@ -12,6 +12,12 @@ public class VillageActionHandler : NetworkBehaviour
     public static event Action<int, int, Resourceblock> OnResourceMutated;
     public static event Action<int, int, Constructionblock> OnBuildingMutated;
 
+    // Broad notifications fired by anything that mutates the construction queue (player
+    // upgrade accepted, server-side upgrade completed) so queue UIs can rebuild, and by
+    // anything that changes inventory so resource HUDs can refresh.
+    public static event Action OnQueueChanged;
+    public static event Action OnInventoryChanged;
+
     public GameStatsData gameStatsData;
 
     [Header("Server Construction Timer")]
@@ -43,9 +49,9 @@ public class VillageActionHandler : NetworkBehaviour
 
     /// <summary>
     /// Client entry point for resource upgrades (wood/clay/iron/wheat tiles).
-    /// Optimistically flags the local cache as under-construction so the UI can update
-    /// immediately, then forwards the request to the server. The level NEVER increments
-    /// locally — only the server may complete an upgrade.
+    /// Optimistically flags the local cache as under-construction and rebuilds the queue
+    /// UI, then forwards the request to the server. The level NEVER increments locally —
+    /// only the server may complete an upgrade.
     /// </summary>
     public void MutateResourceState(int villageId, int index, ObjectType type, bool isUpgrading)
     {
@@ -64,12 +70,13 @@ public class VillageActionHandler : NetworkBehaviour
         Debug.Log($"[Mutation Handler] Optimistic local flag set: v{villageId}.r{index} (upgrading={isUpgrading})");
 
         OnResourceMutated?.Invoke(villageId, index, block);
+        OnQueueChanged?.Invoke();
         SendMutationRequestServerRpc(villageId, index, type, isUpgrading);
     }
 
     /// <summary>
-    /// Building-flow placeholder kept for parity with the prior API. The construction-time
-    /// change in this branch focuses on resource upgrades (wood/clay/iron/wheat tiles).
+    /// Building-flow placeholder kept for parity with the prior API. Construction-time
+    /// changes in this branch focus on resource upgrades.
     /// </summary>
     public void MutateBuildingState(int villageId, int buildingIndex, bool isUpgrading, bool isDowngrading)
     {
@@ -98,7 +105,7 @@ public class VillageActionHandler : NetworkBehaviour
     }
 
     // ======================================================================
-    //  Server pipeline (mutations)
+    //  Server pipeline
     // ======================================================================
 
     [ServerRpc(RequireOwnership = false)]
@@ -130,7 +137,6 @@ public class VillageActionHandler : NetworkBehaviour
 
                 Resourceblock resource = village.farmlands.resources[index];
 
-                // Reject if this tile is already mid-construction — prevents duplicate queue entries.
                 if (resource.isUnderConstruction)
                 {
                     Debug.LogWarning($"[Server] Village {villageId} resource {index} already under construction. Rejecting duplicate.");
@@ -138,22 +144,20 @@ public class VillageActionHandler : NetworkBehaviour
                     return;
                 }
 
+                // Validate the village CAN afford the upgrade when it completes. The actual
+                // inventory deduction is deferred to TickConstructionCompletion so the player
+                // sees the cost come out of inventory only when the build actually finishes.
                 if (!ServerMutationCheck(villageId, index, type, isUpgrading))
                 {
                     ReturnRejected(requestingClientId);
                     return;
                 }
 
-                // Deduct the resource cost immediately. Inventory removal happens server-side
-                // and persists whether or not the player stays connected for the build window.
-                ServerMutationAction(villageId, index, type, isUpgrading);
-
                 resource.isUpgrading = isUpgrading;
                 resource.isDowngrading = !isUpgrading;
                 resource.isUnderConstruction = true;
 
                 // Stamp the build window using NGO ServerTime (authoritative).
-                // Note: level is NOT incremented here — completion happens later in TickConstructionCompletion.
                 double now = NetworkManager.Singleton.ServerTime.Time;
                 int durationSeconds = gameStatsData.GetUpgradeDuration(resource.resourceType, resource.level);
                 resource.upgradeStartServerTime = now;
@@ -161,12 +165,12 @@ public class VillageActionHandler : NetworkBehaviour
                 startTime = resource.upgradeStartServerTime;
                 endTime = resource.upgradeEndServerTime;
 
+                // SaveDatabase just persists the timing flag; inventory is untouched here.
                 VillageDatabaseManager.Instance.SaveDatabase();
                 accepted = true;
                 break;
 
             case ObjectType.building:
-                // Building branch not yet wired — reject for now.
                 Debug.LogWarning("[Server] Building upgrade branch is not yet implemented.");
                 ReturnRejected(requestingClientId);
                 return;
@@ -194,7 +198,10 @@ public class VillageActionHandler : NetworkBehaviour
 
     /// <summary>
     /// Sent ONLY to the requesting client. When accepted=true the timestamps are the
-    /// authoritative server window, so the client can render a server-clocked countdown.
+    /// authoritative server window. Client renders a server-clocked countdown AND
+    /// optimistically deducts the upgrade cost from its local inventory cache so the
+    /// player sees the spend immediately (the server deducts the authoritative copy at
+    /// completion — both sides must end up equal after the post-completion pull).
     /// </summary>
     [ClientRpc]
     private void ReceiveUpgradeAcceptedClientRpc(bool accepted, int villageId, int index, double startServerTime, double endServerTime, ClientRpcParams clientRpcParams = default)
@@ -202,6 +209,17 @@ public class VillageActionHandler : NetworkBehaviour
         if (!accepted)
         {
             Debug.LogWarning("[Client] Upgrade request rejected by server.");
+            // Roll back the optimistic isUnderConstruction flag.
+            VillageData rollback = ClientVillageDatabase.Instance.GetVillageById(villageId);
+            var rb = rollback?.farmlands?.resources;
+            if (rb != null && index >= 0 && index < rb.Count)
+            {
+                rb[index].isUnderConstruction = false;
+                rb[index].isUpgrading = false;
+                rb[index].isDowngrading = false;
+                OnResourceMutated?.Invoke(villageId, index, rb[index]);
+                OnQueueChanged?.Invoke();
+            }
             return;
         }
 
@@ -214,8 +232,13 @@ public class VillageActionHandler : NetworkBehaviour
         block.upgradeStartServerTime = startServerTime;
         block.upgradeEndServerTime = endServerTime;
 
-        Debug.Log($"[Client] Upgrade accepted: v{villageId}.r{index} server window [{startServerTime:F2} -> {endServerTime:F2}]");
+        // Optimistic local inventory deduction so the player immediately sees the spend.
+        DeductUpgradeCost(village, block);
+
+        Debug.Log($"[Client] Upgrade accepted & UI inventory deducted: v{villageId}.r{index} server window [{startServerTime:F2} -> {endServerTime:F2}]");
         OnResourceMutated?.Invoke(villageId, index, block);
+        OnQueueChanged?.Invoke();
+        OnInventoryChanged?.Invoke();
     }
 
     // ======================================================================
@@ -249,11 +272,6 @@ public class VillageActionHandler : NetworkBehaviour
         }
     }
 
-    /// <summary>
-    /// Walks every village's resource list once and completes any block whose
-    /// server-stamped EndTime is in the past. Completion: level++ + reset timing fields +
-    /// broadcast a completion ClientRpc for the affected village.
-    /// </summary>
     private void TickConstructionCompletion()
     {
         if (VillageDatabaseManager.Instance == null) return;
@@ -274,12 +292,17 @@ public class VillageActionHandler : NetworkBehaviour
                 if (now < block.upgradeEndServerTime) continue;
 
                 // ===== Completion (server-authoritative) =====
+                // Authoritative inventory deduction happens here, at the moment of completion.
+                // The client already deducted locally the moment it received the accept RPC, so
+                // both sides will arrive at the same value after the post-completion pull.
+                DeductUpgradeCost(village, block);
+
+                block.level++;
                 block.isUnderConstruction = false;
                 block.isUpgrading = false;
                 block.isDowngrading = false;
                 block.upgradeStartServerTime = 0;
                 block.upgradeEndServerTime = 0;
-                block.level++;
 
                 VillageDatabaseManager.Instance.SaveDatabase();
 
@@ -289,11 +312,6 @@ public class VillageActionHandler : NetworkBehaviour
         }
     }
 
-    /// <summary>
-    /// Broadcast to all clients — each one decides whether the (villageId, index) belongs
-    /// to them. The owning client triggers RequestResourceDataFromServer() to pull fresh
-    /// data; clients with no matching village no-op.
-    /// </summary>
     [ClientRpc]
     private void BroadcastUpgradeCompletedClientRpc(int villageId, int resourceIndex)
     {
@@ -308,7 +326,7 @@ public class VillageActionHandler : NetworkBehaviour
     }
 
     // ======================================================================
-    //  Validation & resource accounting (existing flow retained)
+    //  Validation & shared inventory accounting
     // ======================================================================
 
     private bool ServerMutationCheck(int villageId, int index, ObjectType type, bool isUpgrading)
@@ -337,45 +355,31 @@ public class VillageActionHandler : NetworkBehaviour
         return true;
     }
 
-    private void ServerMutationAction(int villageId, int index, ObjectType type, bool isUpgrading)
+    /// <summary>
+    /// Pure inventory deduction — no DB save, no NGO state. Called by the client the
+    /// moment it receives the accept RPC (optimistic UI), and by the server inside the
+    /// completion tick (authoritative). Both sides share the GameStatsData asset so the
+    /// cost calculation is identical and the book-keeping converges automatically after
+    /// the post-completion RequestResourceDataFromServer pull.
+    /// </summary>
+    private void DeductUpgradeCost(VillageData village, Resourceblock block)
     {
-        if (!IsServer) return;
-
-        VillageData village = VillageDatabaseManager.Instance.GetVillageById(villageId);
-
-        switch (type)
-        {
-            case ObjectType.resource:
-                Resourceblock resourceBlock = village.farmlands.resources[index];
-                village.inventory.wood -= gameStatsData.GetUpgradeCost(resourceBlock.resourceType, resourceBlock.level, InventoryType.wood);
-                village.inventory.clay -= gameStatsData.GetUpgradeCost(resourceBlock.resourceType, resourceBlock.level, InventoryType.clay);
-                village.inventory.iron -= gameStatsData.GetUpgradeCost(resourceBlock.resourceType, resourceBlock.level, InventoryType.iron);
-                village.inventory.wheat -= gameStatsData.GetUpgradeCost(resourceBlock.resourceType, resourceBlock.level, InventoryType.wheat);
-                village.inventory.gold -= gameStatsData.GetUpgradeCost(resourceBlock.resourceType, resourceBlock.level, InventoryType.gold);
-                village.inventory.population -= gameStatsData.GetUpgradeCost(resourceBlock.resourceType, resourceBlock.level, InventoryType.population);
-                ServerCheckInventoryOverflow(villageId);
-                break;
-            case ObjectType.building:
-                break;
-            default:
-                break;
-        }
-        VillageDatabaseManager.Instance.SaveDatabase();
-        return;
+        village.inventory.wood -= gameStatsData.GetUpgradeCost(block.resourceType, block.level, InventoryType.wood);
+        village.inventory.clay -= gameStatsData.GetUpgradeCost(block.resourceType, block.level, InventoryType.clay);
+        village.inventory.iron -= gameStatsData.GetUpgradeCost(block.resourceType, block.level, InventoryType.iron);
+        village.inventory.wheat -= gameStatsData.GetUpgradeCost(block.resourceType, block.level, InventoryType.wheat);
+        village.inventory.gold -= gameStatsData.GetUpgradeCost(block.resourceType, block.level, InventoryType.gold);
+        village.inventory.population -= gameStatsData.GetUpgradeCost(block.resourceType, block.level, InventoryType.population);
+        ClampInventory(village);
     }
 
-    private void ServerCheckInventoryOverflow(int villageId)
+    private void ClampInventory(VillageData village)
     {
-        if (!IsServer) return;
-
-        VillageData village = VillageDatabaseManager.Instance.GetVillageById(villageId);
-
         village.inventory.wood = Mathf.Min(village.inventory.wood, village.inventory.maxWood);
         village.inventory.clay = Mathf.Min(village.inventory.clay, village.inventory.maxClay);
         village.inventory.iron = Mathf.Min(village.inventory.iron, village.inventory.maxIron);
         village.inventory.wheat = Mathf.Min(village.inventory.wheat, village.inventory.maxWheat);
         village.inventory.gold = Mathf.Min(village.inventory.gold, village.inventory.maxGold);
         village.inventory.population = Mathf.Min(village.inventory.population, village.inventory.maxPopulation);
-        return;
     }
 }
